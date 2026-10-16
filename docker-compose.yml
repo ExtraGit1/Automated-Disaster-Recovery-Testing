@@ -1,0 +1,21 @@
+
+services:
+  db:
+    image: postgres:16
+    container_name: drt-postgres
+    environment:
+      POSTGRES_DB: disaster_recovery
+      POSTGRES_USER: drt_user
+      POSTGRES_PASSWORD: drt_password
+    ports:
+        - "5434:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U drt_user -d disaster_recovery"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  postgres_data:
