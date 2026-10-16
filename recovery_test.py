@@ -9,8 +9,11 @@ from pathlib import Path
 
 PROJECT_DIR = Path(__file__).resolve().parent
 REPORT_DIR = PROJECT_DIR / "reports"
+
 HEALTH_URL = "http://127.0.0.1:5000/health"
 RECORDS_URL = "http://127.0.0.1:5000/records"
+RECOVERY_RESULT_URL = "http://127.0.0.1:5000/recovery-result"
+
 EXPECTED_RECORD_ID = 1
 
 
@@ -33,8 +36,16 @@ def check_health():
     try:
         with urllib.request.urlopen(HEALTH_URL, timeout=3) as response:
             data = json.loads(response.read().decode())
-            return response.status == 200 and data.get("status") == "healthy"
-    except (urllib.error.URLError, TimeoutError, OSError, json.JSONDecodeError):
+            return (
+                response.status == 200
+                and data.get("status") == "healthy"
+            )
+    except (
+        urllib.error.URLError,
+        TimeoutError,
+        OSError,
+        json.JSONDecodeError
+    ):
         return False
 
 
@@ -54,26 +65,48 @@ def wait_for_recovery(timeout_seconds=60):
     return False
 
 
+def publish_recovery_metrics(report):
+    payload = {
+        "result": report["status"].lower(),
+        "duration_seconds": report["recovery_time_seconds"],
+        "data_persisted": report.get("data_persisted", False)
+    }
+
+    request_data = json.dumps(payload).encode("utf-8")
+
+    req = urllib.request.Request(
+        RECOVERY_RESULT_URL,
+        data=request_data,
+        headers={"Content-Type": "application/json"},
+        method="POST"
+    )
+
+    with urllib.request.urlopen(req, timeout=5) as response:
+        return json.loads(response.read().decode())
+
+
 def main():
     REPORT_DIR.mkdir(exist_ok=True)
 
     report = {
         "test": "Automated Disaster Recovery Testing",
         "started_at": datetime.now(timezone.utc).isoformat(),
-        "status": "FAILED"
+        "status": "FAILED",
+        "failure_simulated": False,
+        "recovery_completed": False,
+        "data_persisted": False
     }
 
     start_time = time.monotonic()
 
     try:
-        # Confirm the application and database are healthy before testing.
         if not check_health():
             raise RuntimeError(
                 "Application/database is not healthy before the test."
             )
 
-        # Confirm the baseline record exists before simulating failure.
         records_before = get_records()
+
         baseline_exists = any(
             record["id"] == EXPECTED_RECORD_ID
             for record in records_before
@@ -86,12 +119,13 @@ def main():
 
         report["baseline_record_id"] = EXPECTED_RECORD_ID
 
-        # Simulate a database failure without deleting its data or volume.
+        # Stop and restart only the database container.
+        # Do not remove containers or volumes.
         run_docker("stop", "db")
         report["failure_simulated"] = True
 
-        # Restart the database and wait for the app to reconnect.
         run_docker("start", "db")
+
         report["recovery_completed"] = wait_for_recovery()
 
         if not report["recovery_completed"]:
@@ -99,15 +133,17 @@ def main():
                 "Application/database did not recover within 60 seconds."
             )
 
-        # Verify that the baseline record survived the restart.
         records_after = get_records()
+
         report["data_persisted"] = any(
             record["id"] == EXPECTED_RECORD_ID
             for record in records_after
         )
 
         if not report["data_persisted"]:
-            raise RuntimeError("Baseline record was missing after recovery.")
+            raise RuntimeError(
+                "Baseline record was missing after recovery."
+            )
 
         report["status"] = "PASSED"
 
@@ -120,7 +156,15 @@ def main():
         )
         report["finished_at"] = datetime.now(timezone.utc).isoformat()
 
+        try:
+            publish_recovery_metrics(report)
+            report["metrics_published"] = True
+        except Exception as error:
+            report["metrics_published"] = False
+            report["metrics_error"] = str(error)
+
         report_path = REPORT_DIR / "latest_recovery_report.json"
+
         report_path.write_text(
             json.dumps(report, indent=4),
             encoding="utf-8"
