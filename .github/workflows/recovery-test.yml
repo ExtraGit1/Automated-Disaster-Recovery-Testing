@@ -1,0 +1,86 @@
+
+name: Automated Disaster Recovery Test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  recovery-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Install dependencies
+        run: python -m pip install -r requirements.txt
+
+      - name: Start PostgreSQL
+        run: docker compose up -d db
+
+      - name: Wait for PostgreSQL
+        shell: bash
+        run: |
+          for i in {1..30}; do
+            if docker compose exec -T db pg_isready -U drt_user -d disaster_recovery; then
+              echo "PostgreSQL is ready"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          echo "PostgreSQL did not become ready"
+          exit 1
+
+      - name: Start Flask application
+        shell: bash
+        run: |
+          nohup python app/main.py > app.log 2>&1 &
+          echo $! > app.pid
+
+      - name: Wait for application health
+        shell: bash
+        run: |
+          for i in {1..30}; do
+            if python -c "import urllib.request; urllib.request.urlopen('http://127.0.0.1:5000/health', timeout=2)" 2>/dev/null; then
+              echo "Flask application is healthy"
+              exit 0
+            fi
+            sleep 2
+          done
+
+          cat app.log
+          echo "Flask application did not become healthy"
+          exit 1
+
+      - name: Create baseline record
+        run: |
+          python -c "import urllib.request; r=urllib.request.Request('http://127.0.0.1:5000/records', data=b'{\"message\":\"GitHub Actions baseline record\"}', headers={'Content-Type':'application/json'}, method='POST'); print(urllib.request.urlopen(r, timeout=5).read().decode())"
+
+      - name: Run automated recovery test
+        run: python recovery_test.py
+
+      - name: Upload recovery report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: disaster-recovery-report
+          path: reports/latest_recovery_report.json
+          if-no-files-found: warn
+
+      - name: Show application logs if the job fails
+        if: failure()
+        run: cat app.log

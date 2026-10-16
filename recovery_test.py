@@ -129,6 +129,9 @@ def main():
         print(json.dumps(report, indent=4))
         print(f"\nReport saved to: {report_path}")
 
+        if report["status"] != "PASSED":
+            raise SystemExit(1)
+
 
 if __name__ == "__main__":
     main()
