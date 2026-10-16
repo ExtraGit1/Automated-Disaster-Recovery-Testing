@@ -73,12 +73,14 @@ jobs:
       - name: Run automated recovery test
         run: python recovery_test.py
 
-      - name: Upload recovery report
+      - name: Upload recovery reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: disaster-recovery-report
-          path: reports/latest_recovery_report.json
+          name: disaster-recovery-reports
+          path: |
+            reports/latest_recovery_report.json
+            reports/latest_recovery_report.pdf
           if-no-files-found: warn
 
       - name: Show application logs if the job fails
